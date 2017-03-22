@@ -11,13 +11,15 @@ library(xgboost)
 hr<-fread("HR_comma_sep.csv")
 str(hr)
 summary(hr)
-hr$sales<-as.factor(hr$sales)
-hr$salary<-as.factor(hr$salary)
-hr$salary<-ordered(hr$salary, levels=c("low", "medium", "high"))
+hr[, sales:=as.factor(sales)]
+#h2o can't recognize the ordered levels
+hr[, salary:=as.factor(salary)][, salary:=ordered(salary,
+                                                  levels=c("low", "medium", "high"))]
+hr[, left:=as.factor(left)]
 library(corrplot)
 corrplot(cor(hr[,1:8]), method="circle")
 
-ggplot(hr, aes(x=salary, y=satisfaction_level, fill=factor(left)))+
+ggplot(hr, aes(x=salary, y=satisfaction_level, fill=left))+
   geom_boxplot()+
   ggtitle("I'm not getting ENOUGH MONEY, I'm out !")+
   theme(plot.title = element_text(lineheight=2, face="bold.italic"))+
@@ -25,7 +27,7 @@ ggplot(hr, aes(x=salary, y=satisfaction_level, fill=factor(left)))+
                     name="status",
                     breaks=c(0,1), 
                     label=c("stayed", "left"))
-ggplot(hr, aes(x=salary, y=number_project, fill=factor(left)))+
+ggplot(hr, aes(x=salary, y=number_project, fill=left))+
   geom_boxplot()+
   ggtitle("MORE PROJECT, HIGHER SALARY?")+
   theme(plot.title=element_text(lineheight=2, face="bold.italic"))+
@@ -35,7 +37,7 @@ ggplot(hr, aes(x=salary, y=number_project, fill=factor(left)))+
                     label=c("stayed", "left"))
 
 ggplot(hr, aes(factor(time_spend_company), y=average_montly_hours,
-               fill=factor(left), col(factor(left))))+
+               fill=left, col(left)))+
   geom_boxplot(outlier.colour = NA)+
   xlab("Years_in_Company")+
   ggtitle("Spending TOO MUCH TIME, I'm out !")+
@@ -45,7 +47,7 @@ ggplot(hr, aes(factor(time_spend_company), y=average_montly_hours,
                     breaks=c(0,1), 
                     label=c("stayed", "left"))
   
-ggplot(hr, aes(x=salary, y=time_spend_company, fill=factor(left)))+
+ggplot(hr, aes(x=salary, y=time_spend_company, left))+
   geom_boxplot(outlier.color = NA)+
   ylab("Years_in_Company")+
   ggtitle("I fill like I'm being UNDERPAID !")+
@@ -55,7 +57,7 @@ ggplot(hr, aes(x=salary, y=time_spend_company, fill=factor(left)))+
                     breaks=c(0,1), 
                     label=c("stayed", "left"))
 
-ggplot(hr, aes(x=salary, y=average_montly_hours, fill=factor(left)))+
+ggplot(hr, aes(x=salary, y=average_montly_hours, fill=left))+
   geom_boxplot(outlier.color = NA)+
   ylab("average_monthly_hours")+
   ggtitle("I fill like I'm being UNDERPAID !")+
@@ -77,10 +79,9 @@ confusionMatrix(as.integer(firstPred>.5), testHR$left)
 firstForest<-randomForest(as.factor(left)~., data=trainHR)
 forestPred1<-predict(firstForest, newdata=testHR)
 confusionMatrix(as.integer(forestPred1>0.5), testHR$left)
+
 install.packages("Boruta")
 library(Boruta)
-traindata<-hr
-traindata$left<-as.factor(traindata$left)
 set.seed(113)
 boruta_train<-Boruta(left~., data=traindata, doTrace=2)
 final_boruta <- TentativeRoughFix(boruta_train)
@@ -107,3 +108,18 @@ CV_pred<-predict(CVmodel, newdata=testHR)
 CV_trimmed_pred<-predict(CVmodel_trimmed, newdata=testHR)
 auc(CV_pred, testHR$left)
 auc(CV_trimmed_pred, testHR$left)
+
+localH2O <- h2o.init(nthreads = -1)
+h2o.init()
+train_h2o<-as.h2o(trainHR)
+test_h2o<-as.h2o(testHR)
+y.dep=7
+x.ind=c(1:5)
+DL_model<-h2o.deeplearning(x=x.ind, y=y.dep, training_frame = train_h2o, 
+                           epochs = 50, hidden=c(100, 100), activation="Rectifier",
+                           seed=113)
+h2o.performance(DL_model)
+DL_pred<-h2o.predict(DL_model, test_h2o)
+DL_pred_table<-as.data.table(DL_pred)
+DL_pred_table
+auc(DL_pred_table$predict, testHR$left)
