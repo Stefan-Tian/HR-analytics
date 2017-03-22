@@ -5,6 +5,8 @@ library(ipred)
 library(e1071)
 library(data.table)
 library(caTools)
+library(randomForest)
+library(Metrics)
 library(xgboost)
 hr<-fread("HR_comma_sep.csv")
 str(hr)
@@ -68,12 +70,40 @@ spl<-sample.split(hr$left, SplitRatio = .7)
 trainHR<-subset(hr, spl==T)
 testHR<-subset(hr, spl==F)
 table(trainHR$left) 
-firstLog<-glm(left~., data=trainHR, family=binomial)
-firstPred<-predict(firstLog, newdata=testHR, type="response")
-firstPred
-table(testHR$left, firstPred>0.5)
-accuracy<-function(x, y){
-  (x[1,1]+x[2,2])/nrow(y)
-}
-accuracy(table(testHR$left, firstPred>0.5)
-, testHR)
+firstLog<-glm(as.factor(left)~., data=trainHR, family=binomial)
+logPred1<-predict(firstLog, newdata=testHR, type="response")
+logPred1
+confusionMatrix(as.integer(firstPred>.5), testHR$left)
+firstForest<-randomForest(as.factor(left)~., data=trainHR)
+forestPred1<-predict(firstForest, newdata=testHR)
+confusionMatrix(as.integer(forestPred1>0.5), testHR$left)
+install.packages("Boruta")
+library(Boruta)
+traindata<-hr
+traindata$left<-as.factor(traindata$left)
+set.seed(113)
+boruta_train<-Boruta(left~., data=traindata, doTrace=2)
+final_boruta <- TentativeRoughFix(boruta_train)
+auc(forestPred1,testHR$left)
+randomForest::importance(firstForest)
+TrimmedForest<-randomForest(as.factor(left)~.-promotion_last_5years-Work_accident,
+                            data=trainHR)
+TrimmedPred<-predict(TrimmedForest, newdata=testHR)
+auc(TrimmedPred, testHR$left)
+SimpleForest<-randomForest(as.factor(left)~.-promotion_last_5years-Work_accident-sales-salary,
+                           data=trainHR)
+SimplePred<-predict(SimpleForest, newdata=testHR)
+auc(SimplePred, testHR$left)
+#k-fold cross validation
+k<-10
+CVmodel<-train(as.factor(left)~.,
+                    data=trainHR, method="cforest",
+                    trControl=trainControl(method="cv", number=k, verboseIter = T))
+
+CVmodel_trimmed<-train(as.factor(left)~.-promotion_last_5years-Work_accident-sales-salary,
+               data=trainHR, method="cforest",
+                trControl=trainControl(method="cv", number=k, verboseIter = T))
+CV_pred<-predict(CVmodel, newdata=testHR)
+CV_trimmed_pred<-predict(CVmodel_trimmed, newdata=testHR)
+auc(CV_pred, testHR$left)
+auc(CV_trimmed_pred, testHR$left)
