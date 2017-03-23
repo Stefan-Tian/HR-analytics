@@ -8,16 +8,16 @@ library(caTools)
 library(randomForest)
 library(Metrics)
 library(xgboost)
+setwd('~/Downloads')
 hr<-fread("HR_comma_sep.csv")
 str(hr)
 summary(hr)
-hr[, sales:=as.factor(sales)]
-#h2o can't recognize the ordered levels
-hr[, salary:=as.factor(salary)][, salary:=ordered(salary,
-                                                  levels=c("low", "medium", "high"))]
-hr[, left:=as.factor(left)]
 library(corrplot)
 corrplot(cor(hr[,1:8]), method="circle")
+
+#h2o can't recognize the ordered levels
+hr[, `:=`(salary=as.factor(salary),left=as.factor(left), sales=as.factor(sales))]
+hr[, salary:=ordered(salary,levels=c("low", "medium", "high"))]#optional
 
 ggplot(hr, aes(x=salary, y=satisfaction_level, fill=left))+
   geom_boxplot()+
@@ -72,42 +72,45 @@ spl<-sample.split(hr$left, SplitRatio = .7)
 trainHR<-subset(hr, spl==T)
 testHR<-subset(hr, spl==F)
 table(trainHR$left) 
-firstLog<-glm(as.factor(left)~., data=trainHR, family=binomial)
+firstLog<-glm(left~., data=trainHR, family=binomial, maxit = 100)
 logPred1<-predict(firstLog, newdata=testHR, type="response")
 logPred1
-confusionMatrix(as.integer(firstPred>.5), testHR$left)
-firstForest<-randomForest(as.factor(left)~., data=trainHR)
+confusionMatrix(as.integer(logPred1>.5), testHR$left)
+firstForest<-randomForest(left~., data=trainHR)
 forestPred1<-predict(firstForest, newdata=testHR)
-confusionMatrix(as.integer(forestPred1>0.5), testHR$left)
+confusionMatrix(forestPred1, testHR$left)
 
 install.packages("Boruta")
 library(Boruta)
 set.seed(113)
-boruta_train<-Boruta(left~., data=traindata, doTrace=2)
+boruta_train<-Boruta(left~., data=trainHR, doTrace=2)
 final_boruta <- TentativeRoughFix(boruta_train)
 auc(forestPred1,testHR$left)
 randomForest::importance(firstForest)
-TrimmedForest<-randomForest(as.factor(left)~.-promotion_last_5years-Work_accident,
+TrimmedForest<-randomForest(left~.-promotion_last_5years-Work_accident,
                             data=trainHR)
 TrimmedPred<-predict(TrimmedForest, newdata=testHR)
 auc(TrimmedPred, testHR$left)
-SimpleForest<-randomForest(as.factor(left)~.-promotion_last_5years-Work_accident-sales-salary,
+SimpleForest<-randomForest(left~.-promotion_last_5years-Work_accident-sales-salary,
                            data=trainHR)
 SimplePred<-predict(SimpleForest, newdata=testHR)
 auc(SimplePred, testHR$left)
 #k-fold cross validation
-k<-10
-CVmodel<-train(as.factor(left)~.,
-                    data=trainHR, method="cforest",
-                    trControl=trainControl(method="cv", number=k, verboseIter = T))
+k<-5
+Control<-trainControl(method="cv", number=k, verboseIter = T)
+CVmodel<-train(left~.,data=trainHR, method="cforest", trControl=Control)
 
-CVmodel_trimmed<-train(as.factor(left)~.-promotion_last_5years-Work_accident-sales-salary,
-               data=trainHR, method="cforest",
-                trControl=trainControl(method="cv", number=k, verboseIter = T))
+CVmodel_trimmed<-train(left~.-promotion_last_5years-Work_accident,
+               data=trainHR, method="cforest", trControl=Control)
+
+CVmodel_simple<-train(left~.-promotion_last_5years-Work_accident-sales-salary,
+                      data=trainHR, method="cforest", trControl=Control)
 CV_pred<-predict(CVmodel, newdata=testHR)
 CV_trimmed_pred<-predict(CVmodel_trimmed, newdata=testHR)
+CV_simple_pred<-predict(CVmodel_simple, newdata=testHR)
 auc(CV_pred, testHR$left)
 auc(CV_trimmed_pred, testHR$left)
+auc(CV_simple_pred, testHR$left)
 
 localH2O <- h2o.init(nthreads = -1)
 h2o.init()
@@ -115,11 +118,37 @@ train_h2o<-as.h2o(trainHR)
 test_h2o<-as.h2o(testHR)
 y.dep=7
 x.ind=c(1:5)
-DL_model<-h2o.deeplearning(x=x.ind, y=y.dep, training_frame = train_h2o, 
-                           epochs = 50, hidden=c(100, 100), activation="Rectifier",
+DL_model<-h2o.deeplearning(x=x.ind, y=y.dep, training_frame = train_h2o, loss="CrossEntropy",
+                           epochs = 50, rate=0.017, hidden=c(100, 100), activation="Rectifier",
                            seed=113)
 h2o.performance(DL_model)
 DL_pred<-h2o.predict(DL_model, test_h2o)
 DL_pred_table<-as.data.table(DL_pred)
 DL_pred_table
 auc(DL_pred_table$predict, testHR$left)
+library(readr)
+library(stringr)
+library(car)
+library(Matrix)
+library(xgboost)
+hr<-fread("HR_comma_sep.csv") #reform the data again
+trainHR<-subset(hr, spl==T)
+testHR<-subset(hr, spl==F)
+
+feature.names<-names(trainHR)[c(1:6, 8:10)]
+for (f in feature.names) {
+  if (class(trainHR[[f]])=="character") {
+    levels <- unique(c(trainHR[[f]], testHR[[f]]))
+    trainHR[[f]] <- as.integer(factor(trainHR[[f]], levels=levels))
+    testHR[[f]]  <- as.integer(factor(testHR[[f]],  levels=levels))
+  }
+}
+XG_model<-xgboost(data=data.matrix(trainHR[,feature.names, with=F]), label=trainHR$left,
+                  nround=20, objective="binary:logistic", eval_metric = "auc")
+testdata<-data.matrix(testHR[,feature.names, with=F])
+XG_pred<-predict(XG_model, newdata=testdata)
+prediction<-as.numeric(XG_pred>0.5)
+error<-mean(prediction!=testHR$left)
+error
+print(paste("acurracy = ", 1-error))
+
